@@ -1,0 +1,15 @@
+[package]
+name = "mullvad-state"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+futures-util = "0.3.31"
+hyper = "1.6.0"
+reqwest = { version = "0.12.15", features = ["json"] }
+serde = "1.0.219"
+strum = "0.27.1"
+strum_macros = "0.27.1"
+tokio = { version = "1.45.0", features = ["full"] }
+tokio-retry = "0.3.0"
+zbus = "5.7.0"
