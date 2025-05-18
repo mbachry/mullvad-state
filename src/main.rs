@@ -1,10 +1,10 @@
+use futures_util::stream::StreamExt;
+use serde::Deserialize;
+use std::error::Error;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use std::error::Error;
-use futures_util::stream::StreamExt;
-use zbus::{zvariant::OwnedObjectPath, proxy, Connection};
-use serde::Deserialize;
 use tokio_retry::strategy::ExponentialBackoff;
+use zbus::{Connection, proxy, zvariant::OwnedObjectPath};
 
 const MULLVAD_API_URL: &str = "https://ipv4.am.i.mullvad.net/json";
 
@@ -22,9 +22,15 @@ struct MullvadResponse {
 }
 
 async fn __get_vpn_state() -> Result<bool, Box<dyn Error>> {
-    let client = reqwest::ClientBuilder::new().timeout(Duration::from_secs(2)).build()?;
-    let request =  client.get(MULLVAD_API_URL).build()?;
-    let resp = client.execute(request).await?.json::<MullvadResponse>().await?;
+    let client = reqwest::ClientBuilder::new()
+        .timeout(Duration::from_secs(2))
+        .build()?;
+    let request = client.get(MULLVAD_API_URL).build()?;
+    let resp = client
+        .execute(request)
+        .await?
+        .json::<MullvadResponse>()
+        .await?;
     Ok(resp.mullvad_exit_ip)
 }
 
@@ -35,7 +41,13 @@ async fn _get_vpn_state() -> Result<bool, Box<dyn Error>> {
 
 async fn get_vpn_state() -> ConnectionState {
     match _get_vpn_state().await {
-        Ok(is_connected) => if is_connected { ConnectionState::Connected } else { ConnectionState::Disconnected },
+        Ok(is_connected) => {
+            if is_connected {
+                ConnectionState::Connected
+            } else {
+                ConnectionState::Disconnected
+            }
+        }
         Err(err) => {
             eprintln!("Failed to check mullvad state: {}", err);
             ConnectionState::Unknown
@@ -61,7 +73,9 @@ struct MullvadState {
 
 impl MullvadState {
     fn new() -> Self {
-        MullvadState{vpn_connected: RwLock::new(ConnectionState::Uninitialized)}
+        MullvadState {
+            vpn_connected: RwLock::new(ConnectionState::Uninitialized),
+        }
     }
 
     async fn check(&self) {
@@ -106,7 +120,7 @@ async fn watch_network_state(state: &MullvadState) -> Result<(), Box<dyn Error>>
 }
 
 struct DbusServer {
-    state: Arc<MullvadState>
+    state: Arc<MullvadState>,
 }
 
 #[zbus::interface(name = "org.mbachry.Mullvad")]
@@ -124,16 +138,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Initial connection state = {}", state.vpn_connected());
 
     let cloned_state = state.clone();
-    let server = DbusServer{state: cloned_state};
+    let server = DbusServer {
+        state: cloned_state,
+    };
 
     let connection = Connection::session().await?;
     connection
         .object_server()
         .at("/org/mbachry/Mullvad", server)
         .await?;
-    connection
-        .request_name("org.mbachry.Mullvad")
-        .await?;
+    connection.request_name("org.mbachry.Mullvad").await?;
 
     watch_network_state(&state).await?;
     Ok(())
