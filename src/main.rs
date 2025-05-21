@@ -4,6 +4,7 @@ use std::error::Error;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio_retry::strategy::ExponentialBackoff;
+use zbus::object_server::SignalEmitter;
 use zbus::{Connection, proxy, zvariant::OwnedObjectPath};
 
 const MULLVAD_API_URL: &str = "https://ipv4.am.i.mullvad.net/json";
@@ -90,7 +91,7 @@ impl MullvadState {
     }
 }
 
-async fn handle_device_change(state: &MullvadState) {
+async fn handle_device_change(state: &MullvadState, dbus_signal: impl AsyncFn(String) -> ()) {
     // sleep for a bit to let network reconfigure
     tokio::time::sleep(Duration::from_millis(500)).await;
     let old_state = state.vpn_connected();
@@ -98,14 +99,29 @@ async fn handle_device_change(state: &MullvadState) {
     let new_state = state.vpn_connected();
     if old_state != new_state {
         println!("vpn status changed to {}", new_state);
+        dbus_signal(new_state.to_string()).await;
     }
 }
 
-async fn watch_network_state(state: &MullvadState) -> Result<(), Box<dyn Error>> {
+async fn watch_network_state(
+    state: &MullvadState,
+    user_connection: &Connection,
+) -> Result<(), Box<dyn Error>> {
     let connection = Connection::system().await?;
     let systemd_proxy = NetworkManagerProxy::new(&connection).await?;
     let mut device_added_stream = systemd_proxy.receive_device_added().await?;
     let mut device_removed_stream = systemd_proxy.receive_device_removed().await?;
+
+    let dbus_obj = user_connection
+        .object_server()
+        .interface("/org/mbachry/Mullvad")
+        .await?;
+    let dbus_signal = async move |s| {
+        dbus_obj
+            .vpn_state_changed(s)
+            .await
+            .unwrap_or_else(|e| eprintln!("failed to send dbus signal: {}", e));
+    };
 
     loop {
         let got_msg = futures_util::select! {
@@ -114,7 +130,7 @@ async fn watch_network_state(state: &MullvadState) -> Result<(), Box<dyn Error>>
             complete => panic!("Stream ended unexpectedly"),
         };
         if got_msg {
-            handle_device_change(state).await;
+            handle_device_change(state, &dbus_signal).await;
         }
     }
 }
@@ -128,6 +144,9 @@ impl DbusServer {
     async fn get_vpn_state(&self) -> String {
         self.state.vpn_connected().to_string()
     }
+
+    #[zbus(signal)]
+    async fn vpn_state_changed(emitter: &SignalEmitter<'_>, state: String) -> zbus::Result<()>;
 }
 
 #[tokio::main]
@@ -149,6 +168,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
     connection.request_name("org.mbachry.Mullvad").await?;
 
-    watch_network_state(&state).await?;
+    watch_network_state(&state, &connection).await?;
     Ok(())
 }
